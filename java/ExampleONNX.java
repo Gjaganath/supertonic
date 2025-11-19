@@ -21,6 +21,7 @@ public class ExampleONNX {
             "This morning, I took a walk in the park, and the sound of the birds and the breeze was so pleasant that I stopped for a long time just to listen."
         );
         String saveDir = "results";
+        boolean batch = false;
     }
     
     /**
@@ -56,6 +57,9 @@ public class ExampleONNX {
                 case "--save-dir":
                     if (i + 1 < args.length) result.saveDir = args[++i];
                     break;
+                case "--batch":
+                    result.batch = true;
+                    break;
             }
         }
         
@@ -76,10 +80,13 @@ public class ExampleONNX {
             String saveDir = parsedArgs.saveDir;
             List<String> voiceStylePaths = parsedArgs.voiceStyle;
             List<String> textList = parsedArgs.text;
+            boolean batch = parsedArgs.batch;
             
-            if (voiceStylePaths.size() != textList.size()) {
-                throw new RuntimeException("Number of voice styles (" + voiceStylePaths.size() + 
-                    ") must match number of texts (" + textList.size() + ")");
+            if (batch) {
+                if (voiceStylePaths.size() != textList.size()) {
+                    throw new RuntimeException("Number of voice styles (" + voiceStylePaths.size() + 
+                        ") must match number of texts (" + textList.size() + ")");
+                }
             }
             
             int bsz = voiceStylePaths.size();
@@ -100,25 +107,44 @@ public class ExampleONNX {
             for (int n = 0; n < nTest; n++) {
                 System.out.println("\n[" + (n + 1) + "/" + nTest + "] Starting synthesis...");
                 
-                TTSResult ttsResult = Helper.timer("Generating speech from text", () -> {
-                    try {
-                        return textToSpeech.call(textList, style, totalStep, env);
-                    } catch (Exception e) {
-                        throw new RuntimeException(e);
-                    }
-                });
+                TTSResult ttsResult;
+                if (batch) {
+                    ttsResult = Helper.timer("Generating speech from text", () -> {
+                        try {
+                            return textToSpeech.batch(textList, style, totalStep, env);
+                        } catch (Exception e) {
+                            throw new RuntimeException(e);
+                        }
+                    });
+                } else {
+                    ttsResult = Helper.timer("Generating speech from text", () -> {
+                        try {
+                            return textToSpeech.call(textList.get(0), style, totalStep, 0.3f, env);
+                        } catch (Exception e) {
+                            throw new RuntimeException(e);
+                        }
+                    });
+                }
                 
                 float[] wav = ttsResult.wav;
                 float[] duration = ttsResult.duration;
                 
                 // Save outputs
-                int wavLen = wav.length / bsz;
                 for (int i = 0; i < bsz; i++) {
                     String fname = Helper.sanitizeFilename(textList.get(i), 20) + "_" + (n + 1) + ".wav";
-                    int actualLen = (int) (textToSpeech.sampleRate * duration[i]);
+                    float[] wavOut;
                     
-                    float[] wavOut = new float[actualLen];
-                    System.arraycopy(wav, i * wavLen, wavOut, 0, Math.min(actualLen, wavLen));
+                    if (batch) {
+                        int wavLen = wav.length / bsz;
+                        int actualLen = (int) (textToSpeech.sampleRate * duration[i]);
+                        wavOut = new float[actualLen];
+                        System.arraycopy(wav, i * wavLen, wavOut, 0, Math.min(actualLen, wavLen));
+                    } else {
+                        // For non-batch mode, wav is a single concatenated audio
+                        int actualLen = (int) (textToSpeech.sampleRate * duration[0]);
+                        wavOut = new float[Math.min(actualLen, wav.length)];
+                        System.arraycopy(wav, 0, wavOut, 0, wavOut.length);
+                    }
                     
                     String outputPath = saveDir + "/" + fname;
                     Helper.writeWavFile(outputPath, wavOut, textToSpeech.sampleRate);

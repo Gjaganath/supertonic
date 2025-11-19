@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <random>
 #include <sstream>
+#include <regex>
 #include <nlohmann/json.hpp>
 
 using json = nlohmann::json;
@@ -155,7 +156,7 @@ void TextToSpeech::sampleNoisyLatent(
     }
 }
 
-TextToSpeech::SynthesisResult TextToSpeech::call(
+TextToSpeech::SynthesisResult TextToSpeech::_infer(
     Ort::MemoryInfo& memory_info,
     const std::vector<std::string>& text_list,
     const Style& style,
@@ -362,6 +363,52 @@ TextToSpeech::SynthesisResult TextToSpeech::call(
     result.duration = duration;
     
     return result;
+}
+
+TextToSpeech::SynthesisResult TextToSpeech::call(
+    Ort::MemoryInfo& memory_info,
+    const std::string& text,
+    const Style& style,
+    int total_step,
+    float silence_duration
+) {
+    if (style.getTtlShape()[0] != 1) {
+        throw std::runtime_error("Single speaker text to speech only supports single style");
+    }
+    
+    auto text_list = chunkText(text);
+    std::vector<float> wav_cat;
+    float dur_cat = 0.0f;
+    
+    for (const auto& chunk : text_list) {
+        auto result = _infer(memory_info, {chunk}, style, total_step);
+        
+        if (wav_cat.empty()) {
+            wav_cat = result.wav;
+            dur_cat = result.duration[0];
+        } else {
+            int silence_len = static_cast<int>(silence_duration * sample_rate_);
+            std::vector<float> silence(silence_len, 0.0f);
+            wav_cat.insert(wav_cat.end(), silence.begin(), silence.end());
+            wav_cat.insert(wav_cat.end(), result.wav.begin(), result.wav.end());
+            dur_cat += result.duration[0] + silence_duration;
+        }
+    }
+    
+    SynthesisResult final_result;
+    final_result.wav = wav_cat;
+    final_result.duration = {dur_cat};
+    
+    return final_result;
+}
+
+TextToSpeech::SynthesisResult TextToSpeech::batch(
+    Ort::MemoryInfo& memory_info,
+    const std::vector<std::string>& text_list,
+    const Style& style,
+    int total_step
+) {
+    return _infer(memory_info, text_list, style, total_step);
 }
 
 // ============================================================================
@@ -711,4 +758,93 @@ std::string sanitizeFilename(const std::string& text, int max_len) {
         count++;
     }
     return result;
+}
+
+// ============================================================================
+// Chunk text
+// ============================================================================
+
+static std::string trim(const std::string& str) {
+    size_t start = 0;
+    while (start < str.size() && std::isspace(static_cast<unsigned char>(str[start]))) {
+        start++;
+    }
+    
+    size_t end = str.size();
+    while (end > start && std::isspace(static_cast<unsigned char>(str[end - 1]))) {
+        end--;
+    }
+    
+    return str.substr(start, end - start);
+}
+
+std::vector<std::string> chunkText(const std::string& text, int max_len) {
+    std::vector<std::string> chunks;
+    
+    // Split by paragraph (two or more newlines)
+    std::regex paragraph_regex(R"(\n\s*\n+)");
+    std::sregex_token_iterator iter(text.begin(), text.end(), paragraph_regex, -1);
+    std::sregex_token_iterator end;
+    
+    std::vector<std::string> paragraphs;
+    for (; iter != end; ++iter) {
+        std::string para = trim(*iter);
+        if (!para.empty()) {
+            paragraphs.push_back(para);
+        }
+    }
+    
+    // Split by sentence boundaries, excluding abbreviations
+    // This is a simplified version - C++ negative lookbehind is more complex
+    std::regex sentence_regex(R"([.!?]\s+)");
+    
+    for (const auto& paragraph : paragraphs) {
+        std::sregex_token_iterator sent_iter(paragraph.begin(), paragraph.end(), sentence_regex, -1);
+        std::sregex_token_iterator sent_end;
+        
+        std::vector<std::string> sentences;
+        std::string current = "";
+        
+        for (; sent_iter != sent_end; ++sent_iter) {
+            std::string sentence = *sent_iter;
+            if (!sentence.empty()) {
+                // Add back the punctuation
+                if (sent_iter != sent_end) {
+                    std::smatch match;
+                    if (std::regex_search(sent_iter->first, paragraph.end(), match, sentence_regex)) {
+                        sentence += match.str();
+                    }
+                }
+                sentences.push_back(sentence);
+            }
+        }
+        
+        // Combine sentences into chunks
+        std::string current_chunk = "";
+        
+        for (const auto& sentence : sentences) {
+            if (static_cast<int>(current_chunk.length() + sentence.length() + 1) <= max_len) {
+                if (!current_chunk.empty()) {
+                    current_chunk += " ";
+                }
+                current_chunk += sentence;
+            } else {
+                if (!current_chunk.empty()) {
+                    chunks.push_back(trim(current_chunk));
+                }
+                current_chunk = sentence;
+            }
+        }
+        
+        if (!current_chunk.empty()) {
+            chunks.push_back(trim(current_chunk));
+        }
+    }
+    
+    // If no chunks were created, return the original text
+    if (chunks.empty()) {
+        chunks.push_back(trim(text));
+    }
+    
+    return chunks;
 }

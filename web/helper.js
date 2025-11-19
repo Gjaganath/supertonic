@@ -72,7 +72,7 @@ export class TextToSpeech {
         this.sampleRate = cfgs.ae.sample_rate;
     }
 
-    async call(textList, style, totalStep, progressCallback = null) {
+    async _infer(textList, style, totalStep, progressCallback = null) {
         const bsz = textList.length;
         
         // Process text
@@ -174,6 +174,35 @@ export class TextToSpeech {
         const wav = Array.from(vocoderOutputs.wav_tts.data);
         
         return { wav, duration };
+    }
+
+    async call(text, style, totalStep, silenceDuration = 0.3, progressCallback = null) {
+        if (style.ttl.dims[0] !== 1) {
+            throw new Error('Single speaker text to speech only supports single style');
+        }
+        const textList = chunkText(text);
+        let wavCat = [];
+        let durCat = 0;
+        
+        for (const chunk of textList) {
+            const { wav, duration } = await this._infer([chunk], style, totalStep, progressCallback);
+            
+            if (wavCat.length === 0) {
+                wavCat = wav;
+                durCat = duration[0];
+            } else {
+                const silenceLen = Math.floor(silenceDuration * this.sampleRate);
+                const silence = new Array(silenceLen).fill(0);
+                wavCat = [...wavCat, ...silence, ...wav];
+                durCat += duration[0] + silenceDuration;
+            }
+        }
+        
+        return { wav: wavCat, duration: [durCat] };
+    }
+
+    async batch(textList, style, totalStep, progressCallback = null) {
+        return await this._infer(textList, style, totalStep, progressCallback);
     }
 
     sampleNoisyLatent(duration, sampleRate, baseChunkSize, chunkCompress, latentDim) {
@@ -345,6 +374,48 @@ export async function loadTextToSpeech(onnxDir, sessionOptions = {}, progressCal
     const textToSpeech = new TextToSpeech(cfgs, textProcessor, dpOrt, textEncOrt, vectorEstOrt, vocoderOrt);
     
     return { textToSpeech, cfgs };
+}
+
+/**
+ * Chunk text into manageable segments
+ */
+function chunkText(text, maxLen = 300) {
+    if (typeof text !== 'string') {
+        throw new Error(`chunkText expects a string, got ${typeof text}`);
+    }
+    
+    // Split by paragraph (two or more newlines)
+    const paragraphs = text.trim().split(/\n\s*\n+/).filter(p => p.trim());
+    
+    const chunks = [];
+    
+    for (let paragraph of paragraphs) {
+        paragraph = paragraph.trim();
+        if (!paragraph) continue;
+        
+        // Split by sentence boundaries (period, question mark, exclamation mark followed by space)
+        // But exclude common abbreviations like Mr., Mrs., Dr., etc. and single capital letters like F.
+        const sentences = paragraph.split(/(?<!Mr\.|Mrs\.|Ms\.|Dr\.|Prof\.|Sr\.|Jr\.|Ph\.D\.|etc\.|e\.g\.|i\.e\.|vs\.|Inc\.|Ltd\.|Co\.|Corp\.|St\.|Ave\.|Blvd\.)(?<!\b[A-Z]\.)(?<=[.!?])\s+/);
+        
+        let currentChunk = "";
+        
+        for (let sentence of sentences) {
+            if (currentChunk.length + sentence.length + 1 <= maxLen) {
+                currentChunk += (currentChunk ? " " : "") + sentence;
+            } else {
+                if (currentChunk) {
+                    chunks.push(currentChunk.trim());
+                }
+                currentChunk = sentence;
+            }
+        }
+        
+        if (currentChunk) {
+            chunks.push(currentChunk.trim());
+        }
+    }
+    
+    return chunks;
 }
 
 /**

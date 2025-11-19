@@ -7,6 +7,8 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/go-audio/audio"
@@ -143,6 +145,184 @@ func (up *UnicodeProcessor) Call(textList []string) ([][]int64, [][][]float64) {
 	textMask := lengthToMask(textLengths, maxLen)
 
 	return textIDs, textMask
+}
+
+// Text chunking utilities
+const maxChunkLength = 300
+
+var abbreviations = []string{
+	"Dr.", "Mr.", "Mrs.", "Ms.", "Prof.", "Sr.", "Jr.",
+	"St.", "Ave.", "Rd.", "Blvd.", "Dept.", "Inc.", "Ltd.",
+	"Co.", "Corp.", "etc.", "vs.", "i.e.", "e.g.", "Ph.D.",
+}
+
+func chunkText(text string, maxLen int) []string {
+	if maxLen == 0 {
+		maxLen = maxChunkLength
+	}
+
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return []string{""}
+	}
+
+	// Split by paragraphs
+	paragraphs := regexp.MustCompile(`\n\s*\n`).Split(text, -1)
+	var chunks []string
+
+	for _, para := range paragraphs {
+		para = strings.TrimSpace(para)
+		if para == "" {
+			continue
+		}
+
+		if len(para) <= maxLen {
+			chunks = append(chunks, para)
+			continue
+		}
+
+		// Split by sentences
+		sentences := splitSentences(para)
+		var current strings.Builder
+		currentLen := 0
+
+		for _, sentence := range sentences {
+			sentence = strings.TrimSpace(sentence)
+			if sentence == "" {
+				continue
+			}
+
+			sentenceLen := len(sentence)
+			if sentenceLen > maxLen {
+				// If sentence is longer than maxLen, split by comma or space
+				if current.Len() > 0 {
+					chunks = append(chunks, strings.TrimSpace(current.String()))
+					current.Reset()
+					currentLen = 0
+				}
+
+				// Try splitting by comma
+				parts := strings.Split(sentence, ",")
+				for _, part := range parts {
+					part = strings.TrimSpace(part)
+					if part == "" {
+						continue
+					}
+
+					partLen := len(part)
+					if partLen > maxLen {
+						// Split by space as last resort
+						words := strings.Fields(part)
+						var wordChunk strings.Builder
+						wordChunkLen := 0
+
+						for _, word := range words {
+							wordLen := len(word)
+							if wordChunkLen+wordLen+1 > maxLen && wordChunk.Len() > 0 {
+								chunks = append(chunks, strings.TrimSpace(wordChunk.String()))
+								wordChunk.Reset()
+								wordChunkLen = 0
+							}
+
+							if wordChunk.Len() > 0 {
+								wordChunk.WriteString(" ")
+								wordChunkLen++
+							}
+							wordChunk.WriteString(word)
+							wordChunkLen += wordLen
+						}
+
+						if wordChunk.Len() > 0 {
+							chunks = append(chunks, strings.TrimSpace(wordChunk.String()))
+						}
+					} else {
+						if currentLen+partLen+1 > maxLen && current.Len() > 0 {
+							chunks = append(chunks, strings.TrimSpace(current.String()))
+							current.Reset()
+							currentLen = 0
+						}
+
+						if current.Len() > 0 {
+							current.WriteString(", ")
+							currentLen += 2
+						}
+						current.WriteString(part)
+						currentLen += partLen
+					}
+				}
+				continue
+			}
+
+			if currentLen+sentenceLen+1 > maxLen && current.Len() > 0 {
+				chunks = append(chunks, strings.TrimSpace(current.String()))
+				current.Reset()
+				currentLen = 0
+			}
+
+			if current.Len() > 0 {
+				current.WriteString(" ")
+				currentLen++
+			}
+			current.WriteString(sentence)
+			currentLen += sentenceLen
+		}
+
+		if current.Len() > 0 {
+			chunks = append(chunks, strings.TrimSpace(current.String()))
+		}
+	}
+
+	if len(chunks) == 0 {
+		return []string{""}
+	}
+
+	return chunks
+}
+
+func splitSentences(text string) []string {
+	// Go's regexp doesn't support lookbehind, so we use a simpler approach
+	// Split on sentence boundaries and then check if they're abbreviations
+	re := regexp.MustCompile(`([.!?])\s+`)
+	
+	// Find all matches
+	matches := re.FindAllStringIndex(text, -1)
+	if len(matches) == 0 {
+		return []string{text}
+	}
+	
+	var sentences []string
+	lastEnd := 0
+	
+	for _, match := range matches {
+		// Get the text before the punctuation
+		beforePunc := text[lastEnd:match[0]]
+		
+		// Check if this ends with an abbreviation
+		isAbbrev := false
+		for _, abbrev := range abbreviations {
+			if strings.HasSuffix(strings.TrimSpace(beforePunc+text[match[0]:match[0]+1]), abbrev) {
+				isAbbrev = true
+				break
+			}
+		}
+		
+		if !isAbbrev {
+			// This is a real sentence boundary
+			sentences = append(sentences, text[lastEnd:match[1]])
+			lastEnd = match[1]
+		}
+	}
+	
+	// Add the remaining text
+	if lastEnd < len(text) {
+		sentences = append(sentences, text[lastEnd:])
+	}
+	
+	if len(sentences) == 0 {
+		return []string{text}
+	}
+	
+	return sentences
 }
 
 // Utility functions
@@ -392,7 +572,7 @@ func (tts *TextToSpeech) sampleNoisyLatent(durOnnx []float32) ([][][]float64, []
 	return noisyLatent, latentMask
 }
 
-func (tts *TextToSpeech) Call(textList []string, style *Style, totalStep int) ([]float32, []float32, error) {
+func (tts *TextToSpeech) _infer(textList []string, style *Style, totalStep int) ([]float32, []float32, error) {
 	bsz := len(textList)
 
 	// Process text
@@ -508,6 +688,44 @@ func (tts *TextToSpeech) Call(textList []string, style *Style, totalStep int) ([
 	wav := wavBatchTensor.GetData()
 
 	return wav, durOnnx, nil
+}
+
+// Call synthesizes speech from a single text with automatic chunking
+func (tts *TextToSpeech) Call(text string, style *Style, totalStep int, silenceDuration float32) ([]float32, float32, error) {
+	chunks := chunkText(text, 0)
+	
+	var wavCat []float32
+	var durCat float32
+
+	for i, chunk := range chunks {
+		wav, duration, err := tts._infer([]string{chunk}, style, totalStep)
+		if err != nil {
+			return nil, 0, err
+		}
+
+		dur := duration[0]
+		wavLen := int(float32(tts.SampleRate) * dur)
+		wavChunk := wav[:wavLen]
+
+		if i == 0 {
+			wavCat = wavChunk
+			durCat = dur
+		} else {
+			silenceLen := int(silenceDuration * float32(tts.SampleRate))
+			silence := make([]float32, silenceLen)
+			
+			wavCat = append(wavCat, silence...)
+			wavCat = append(wavCat, wavChunk...)
+			durCat += silenceDuration + dur
+		}
+	}
+
+	return wavCat, durCat, nil
+}
+
+// Batch synthesizes speech from multiple texts
+func (tts *TextToSpeech) Batch(textList []string, style *Style, totalStep int) ([]float32, []float32, error) {
+	return tts._infer(textList, style, totalStep)
 }
 
 func (tts *TextToSpeech) Destroy() {

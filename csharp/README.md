@@ -2,6 +2,10 @@
 
 This guide provides examples for running TTS inference using `ExampleONNX.cs`.
 
+## 📰 Update News
+
+**2025.11.19** - Added automatic text chunking for long-form inference. Long texts are split into chunks and synthesized with natural pauses.
+
 ## Installation
 
 ### Prerequisites
@@ -33,14 +37,16 @@ Process multiple voice styles and texts at once:
 ```bash
 dotnet run -- \
   --voice-style assets/voice_styles/M1.json,assets/voice_styles/F1.json \
-  --text "The sun sets behind the mountains, painting the sky in shades of pink and orange.|The weather is beautiful and sunny outside. A gentle breeze makes the air feel fresh and pleasant."
+  --text "The sun sets behind the mountains, painting the sky in shades of pink and orange.|The weather is beautiful and sunny outside. A gentle breeze makes the air feel fresh and pleasant." \
+  --batch
 ```
 
 This will:
+- Use `--batch` flag to enable batch processing mode
 - Generate speech for 2 different voice-text pairs
 - Use male voice style (M1.json) for the first text
 - Use female voice style (F1.json) for the second text
-- Process both samples in a single batch
+- Process both samples in a single batch (automatic text chunking disabled)
 
 ### Example 3: High Quality Inference
 Increase denoising steps for better quality:
@@ -55,6 +61,22 @@ This will:
 - Use 10 denoising steps instead of the default 5
 - Produce higher quality output at the cost of slower inference
 
+### Example 4: Long-Form Inference
+For long texts, the system automatically chunks the text into manageable segments and generates a single audio file:
+```bash
+dotnet run -- \
+  --voice-style assets/voice_styles/M1.json \
+  --text "Once upon a time, in a small village nestled between rolling hills, there lived a young artist named Clara. Every morning, she would wake up before dawn to capture the first light of day. The golden rays streaming through her window inspired countless paintings. Her work was known throughout the region for its vibrant colors and emotional depth. People from far and wide came to see her gallery, and many said her paintings could tell stories that words never could."
+```
+
+This will:
+- Automatically split the long text into smaller chunks (max 300 characters by default)
+- Process each chunk separately while maintaining natural speech flow
+- Insert brief silences (0.3 seconds) between chunks for natural pacing
+- Combine all chunks into a single output audio file
+
+**Note**: When using batch mode (`--batch`), automatic text chunking is disabled. Use non-batch mode for long-form text synthesis.
+
 ## Available Arguments
 
 | Argument | Type | Default | Description |
@@ -66,10 +88,12 @@ This will:
 | `--voice-style` | str+ | `assets/voice_styles/M1.json` | Voice style file path(s) (comma-separated) |
 | `--text` | str+ | (long default text) | Text(s) to synthesize (pipe-separated: `|`) |
 | `--save-dir` | str | `results` | Output directory |
+| `--batch` | flag | False | Enable batch mode (disables automatic text chunking) |
 
 ## Notes
 
 - **Batch Processing**: The number of `--voice-style` files must match the number of `--text` entries
+- **Long-Form Inference**: Without `--batch` flag, long texts are automatically chunked and combined into a single audio file with natural pauses
 - **Quality vs Speed**: Higher `--total-step` values produce better quality but take longer
 - **GPU Support**: GPU mode is not supported yet
 

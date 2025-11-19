@@ -19,6 +19,7 @@ namespace Supertonic
                 "This morning, I took a walk in the park, and the sound of the birds and the breeze was so pleasant that I stopped for a long time just to listen." 
             };
             public string SaveDir { get; set; } = "results";
+            public bool Batch { get; set; } = false;
         }
 
         static Args ParseArgs(string[] args)
@@ -31,6 +32,9 @@ namespace Supertonic
                 {
                     case "--use-gpu":
                         result.UseGpu = true;
+                        break;
+                    case "--batch":
+                        result.Batch = true;
                         break;
                     case "--onnx-dir" when i + 1 < args.Length:
                         result.OnnxDir = args[++i];
@@ -67,13 +71,13 @@ namespace Supertonic
             string saveDir = parsedArgs.SaveDir;
             var voiceStylePaths = parsedArgs.VoiceStyle;
             var textList = parsedArgs.Text;
+            bool batch = parsedArgs.Batch;
 
             if (voiceStylePaths.Count != textList.Count)
             {
                 throw new ArgumentException(
                     $"Number of voice styles ({voiceStylePaths.Count}) must match number of texts ({textList.Count})");
             }
-
             int bsz = voiceStylePaths.Count;
 
             // --- 2. Load Text to Speech --- //
@@ -88,9 +92,17 @@ namespace Supertonic
             {
                 Console.WriteLine($"\n[{n + 1}/{nTest}] Starting synthesis...");
                 
-                var (wav, duration) = Helper.Timer("Generating speech from text", () => 
-                    textToSpeech.Call(textList, style, totalStep)
-                );
+                var (wav, duration) = Helper.Timer("Generating speech from text", () =>
+                {
+                    if (batch)
+                    {
+                        return textToSpeech.Batch(textList, style, totalStep);
+                    }
+                    else
+                    {
+                        return textToSpeech.Call(textList[0], style, totalStep);
+                    }
+                });
 
                 if (!Directory.Exists(saveDir))
                 {

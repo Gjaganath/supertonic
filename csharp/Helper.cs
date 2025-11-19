@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
 
@@ -193,7 +194,7 @@ namespace Supertonic
             return (noisyLatent, latentMask);
         }
 
-        public (float[] wav, float[] duration) Call(List<string> textList, Style style, int totalStep)
+        private (float[] wav, float[] duration) _Infer(List<string> textList, Style style, int totalStep)
         {
             int bsz = textList.Count;
             if (bsz != style.TtlShape[0])
@@ -281,6 +282,44 @@ namespace Supertonic
             var wavTensor = vocoderOutputs.First(o => o.Name == "wav_tts").AsTensor<float>();
 
             return (wavTensor.ToArray(), durOnnx);
+        }
+
+        public (float[] wav, float[] duration) Call(string text, Style style, int totalStep, float silenceDuration = 0.3f)
+        {
+            if (style.TtlShape[0] != 1)
+            {
+                throw new ArgumentException("Single speaker text to speech only supports single style");
+            }
+
+            var textList = Helper.ChunkText(text);
+            var wavCat = new List<float>();
+            float durCat = 0.0f;
+
+            foreach (var chunk in textList)
+            {
+                var (wav, duration) = _Infer(new List<string> { chunk }, style, totalStep);
+
+                if (wavCat.Count == 0)
+                {
+                    wavCat.AddRange(wav);
+                    durCat = duration[0];
+                }
+                else
+                {
+                    int silenceLen = (int)(silenceDuration * SampleRate);
+                    var silence = new float[silenceLen];
+                    wavCat.AddRange(silence);
+                    wavCat.AddRange(wav);
+                    durCat += duration[0] + silenceDuration;
+                }
+            }
+
+            return (wavCat.ToArray(), new float[] { durCat });
+        }
+
+        public (float[] wav, float[] duration) Batch(List<string> textList, Style style, int totalStep)
+        {
+            return _Infer(textList, style, totalStep);
         }
     }
 
@@ -607,6 +646,66 @@ namespace Supertonic
                 count++;
             }
             return result.ToString();
+        }
+
+        // ============================================================================
+        // Chunk text
+        // ============================================================================
+
+        public static List<string> ChunkText(string text, int maxLen = 300)
+        {
+            var chunks = new List<string>();
+
+            // Split by paragraph (two or more newlines)
+            var paragraphRegex = new Regex(@"\n\s*\n+");
+            var paragraphs = paragraphRegex.Split(text.Trim())
+                .Select(p => p.Trim())
+                .Where(p => !string.IsNullOrEmpty(p))
+                .ToList();
+
+            // Split by sentence boundaries, excluding abbreviations
+            var sentenceRegex = new Regex(@"(?<!Mr\.|Mrs\.|Ms\.|Dr\.|Prof\.|Sr\.|Jr\.|Ph\.D\.|etc\.|e\.g\.|i\.e\.|vs\.|Inc\.|Ltd\.|Co\.|Corp\.|St\.|Ave\.|Blvd\.)(?<!\b[A-Z]\.)(?<=[.!?])\s+");
+
+            foreach (var paragraph in paragraphs)
+            {
+                var sentences = sentenceRegex.Split(paragraph);
+                string currentChunk = "";
+
+                foreach (var sentence in sentences)
+                {
+                    if (string.IsNullOrEmpty(sentence)) continue;
+
+                    if (currentChunk.Length + sentence.Length + 1 <= maxLen)
+                    {
+                        if (!string.IsNullOrEmpty(currentChunk))
+                        {
+                            currentChunk += " ";
+                        }
+                        currentChunk += sentence;
+                    }
+                    else
+                    {
+                        if (!string.IsNullOrEmpty(currentChunk))
+                        {
+                            chunks.Add(currentChunk.Trim());
+                        }
+                        currentChunk = sentence;
+                    }
+                }
+
+                if (!string.IsNullOrEmpty(currentChunk))
+                {
+                    chunks.Add(currentChunk.Trim());
+                }
+            }
+
+            // If no chunks were created, return the original text
+            if (chunks.Count == 0)
+            {
+                chunks.Add(text.Trim());
+            }
+
+            return chunks;
         }
     }
 }

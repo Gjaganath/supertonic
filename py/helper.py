@@ -85,7 +85,7 @@ class TextToSpeech:
         noisy_latent = noisy_latent * latent_mask
         return noisy_latent, latent_mask
 
-    def __call__(
+    def _infer(
         self, text_list: list[str], style: Style, total_step: int
     ) -> tuple[np.ndarray, np.ndarray]:
         assert (
@@ -118,6 +118,33 @@ class TextToSpeech:
             )
         wav, *_ = self.vocoder_ort.run(None, {"latent": xt})
         return wav, dur_onnx
+
+    def __call__(
+        self, text: str, style: Style, total_step: int, silence_duration: float = 0.3
+    ) -> tuple[np.ndarray, np.ndarray]:
+        assert (
+            style.ttl.shape[0] == 1
+        ), "Single speaker text to speech only supports single style"
+        text_list = chunk_text(text)
+        wav_cat = None
+        dur_cat = None
+        for text in text_list:
+            wav, dur_onnx = self._infer([text], style, total_step)
+            if wav_cat is None:
+                wav_cat = wav
+                dur_cat = dur_onnx
+            else:
+                silence = np.zeros(
+                    (1, int(silence_duration * self.sample_rate)), dtype=np.float32
+                )
+                wav_cat = np.concatenate([wav_cat, silence, wav], axis=1)
+                dur_cat += dur_onnx + silence_duration
+        return wav_cat, dur_cat
+
+    def batch(
+        self, text_list: list[str], style: Style, total_step: int
+    ) -> tuple[np.ndarray, np.ndarray]:
+        return self._infer(text_list, style, total_step)
 
 
 def length_to_mask(lengths: np.ndarray, max_len: Optional[int] = None) -> np.ndarray:
@@ -247,3 +274,47 @@ def sanitize_filename(text: str, max_len: int) -> str:
 
     prefix = text[:max_len]
     return re.sub(r"[^a-zA-Z0-9]", "_", prefix)
+
+
+def chunk_text(text: str, max_len: int = 300) -> list[str]:
+    """
+    Split text into chunks by paragraphs and sentences.
+
+    Args:
+        text: Input text to chunk
+        max_len: Maximum length of each chunk (default: 300)
+
+    Returns:
+        List of text chunks
+    """
+    import re
+
+    # Split by paragraph (two or more newlines)
+    paragraphs = [p.strip() for p in re.split(r"\n\s*\n+", text.strip()) if p.strip()]
+
+    chunks = []
+
+    for paragraph in paragraphs:
+        paragraph = paragraph.strip()
+        if not paragraph:
+            continue
+
+        # Split by sentence boundaries (period, question mark, exclamation mark followed by space)
+        # But exclude common abbreviations like Mr., Mrs., Dr., etc. and single capital letters like F.
+        pattern = r"(?<!Mr\.)(?<!Mrs\.)(?<!Ms\.)(?<!Dr\.)(?<!Prof\.)(?<!Sr\.)(?<!Jr\.)(?<!Ph\.D\.)(?<!etc\.)(?<!e\.g\.)(?<!i\.e\.)(?<!vs\.)(?<!Inc\.)(?<!Ltd\.)(?<!Co\.)(?<!Corp\.)(?<!St\.)(?<!Ave\.)(?<!Blvd\.)(?<!\b[A-Z]\.)(?<=[.!?])\s+"
+        sentences = re.split(pattern, paragraph)
+
+        current_chunk = ""
+
+        for sentence in sentences:
+            if len(current_chunk) + len(sentence) + 1 <= max_len:
+                current_chunk += (" " if current_chunk else "") + sentence
+            else:
+                if current_chunk:
+                    chunks.append(current_chunk.strip())
+                current_chunk = sentence
+
+        if current_chunk:
+            chunks.append(current_chunk.strip())
+
+    return chunks

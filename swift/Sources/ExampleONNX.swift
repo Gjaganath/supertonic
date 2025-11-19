@@ -9,6 +9,7 @@ struct Args {
     var voiceStyle: [String] = ["assets/voice_styles/M1.json"]
     var text: [String] = ["This morning, I took a walk in the park, and the sound of the birds and the breeze was so pleasant that I stopped for a long time just to listen."]
     var saveDir: String = "results"
+    var batch: Bool = false
 }
 
 func parseArgs() -> Args {
@@ -52,6 +53,8 @@ func parseArgs() -> Args {
                 args.saveDir = arguments[i + 1]
                 i += 1
             }
+        case "--batch":
+            args.batch = true
         default:
             break
         }
@@ -70,9 +73,11 @@ struct ExampleONNX {
         // --- 1. Parse arguments --- //
         let args = parseArgs()
         
-        guard args.voiceStyle.count == args.text.count else {
-            print("Error: Number of voice styles (\(args.voiceStyle.count)) must match number of texts (\(args.text.count))")
-            return
+        if args.batch {
+            guard args.voiceStyle.count == args.text.count else {
+                print("Error: Number of voice styles (\(args.voiceStyle.count)) must match number of texts (\(args.text.count))")
+                return
+            }
         }
         
         let bsz = args.voiceStyle.count
@@ -92,19 +97,39 @@ struct ExampleONNX {
             for n in 0..<args.nTest {
                 print("\n[\(n + 1)/\(args.nTest)] Starting synthesis...")
                 
-                let (wav, duration) = try timer("Generating speech from text") {
-                    try textToSpeech.call(args.text, style, args.totalStep)
+                let wav: [Float]
+                let duration: [Float]
+                
+                if args.batch {
+                    let result = try timer("Generating speech from text") {
+                        try textToSpeech.batch(args.text, style, args.totalStep)
+                    }
+                    wav = result.wav
+                    duration = result.duration
+                } else {
+                    let result = try timer("Generating speech from text") {
+                        try textToSpeech.call(args.text[0], style, args.totalStep, silenceDuration: 0.3)
+                    }
+                    wav = result.wav
+                    duration = [result.duration]
                 }
                 
                 // Save outputs
-                let wavLen = wav.count / bsz
                 for i in 0..<bsz {
                     let fname = "\(sanitizeFilename(args.text[i], maxLen: 20))_\(n + 1).wav"
-                    let actualLen = Int(Float(textToSpeech.sampleRate) * duration[i])
+                    let wavOut: [Float]
                     
-                    let wavStart = i * wavLen
-                    let wavEnd = min(wavStart + actualLen, wavStart + wavLen)
-                    let wavOut = Array(wav[wavStart..<wavEnd])
+                    if args.batch {
+                        let wavLen = wav.count / bsz
+                        let actualLen = Int(Float(textToSpeech.sampleRate) * duration[i])
+                        let wavStart = i * wavLen
+                        let wavEnd = min(wavStart + actualLen, wavStart + wavLen)
+                        wavOut = Array(wav[wavStart..<wavEnd])
+                    } else {
+                        // For non-batch mode, wav is a single concatenated audio
+                        let actualLen = Int(Float(textToSpeech.sampleRate) * duration[0])
+                        wavOut = Array(wav.prefix(actualLen))
+                    }
                     
                     let outputPath = "\(args.saveDir)/\(fname)"
                     try writeWavFile(outputPath, wavOut, textToSpeech.sampleRate)

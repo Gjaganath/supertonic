@@ -18,13 +18,16 @@ function parseArgs() {
         nTest: 4,
         voiceStyle: ['assets/voice_styles/M1.json'],
         text: ['This morning, I took a walk in the park, and the sound of the birds and the breeze was so pleasant that I stopped for a long time just to listen.'],
-        saveDir: 'results'
+        saveDir: 'results',
+        batch: false
     };
 
     for (let i = 2; i < process.argv.length; i++) {
         const arg = process.argv[i];
         if (arg === '--use-gpu') {
             args.useGpu = true;
+        } else if (arg === '--batch') {
+            args.batch = true;
         } else if (arg === '--onnx-dir' && i + 1 < process.argv.length) {
             args.onnxDir = process.argv[++i];
         } else if (arg === '--total-step' && i + 1 < process.argv.length) {
@@ -56,11 +59,11 @@ async function main() {
     const saveDir = args.saveDir;
     const voiceStylePaths = args.voiceStyle.map(p => path.resolve(__dirname, p));
     const textList = args.text;
+    const batch = args.batch;
 
     if (voiceStylePaths.length !== textList.length) {
         throw new Error(`Number of voice styles (${voiceStylePaths.length}) must match number of texts (${textList.length})`);
     }
-
     const bsz = voiceStylePaths.length;
 
     // --- 2. Load Text to Speech --- //
@@ -75,7 +78,11 @@ async function main() {
         console.log(`\n[${n + 1}/${nTest}] Starting synthesis...`);
         
         const { wav, duration } = await timer('Generating speech from text', async () => {
-            return await textToSpeech.call(textList, style, totalStep);
+            if (batch) {
+                return await textToSpeech.batch(textList, style, totalStep);
+            } else {
+                return await textToSpeech.call(textList[0], style, totalStep);
+            }
         });
         
         if (!fs.existsSync(saveDir)) {

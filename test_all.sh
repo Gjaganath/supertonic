@@ -17,8 +17,9 @@ echo ""
 echo "Select test mode:"
 echo "  1) Default inference only"
 echo "  2) Batch inference only"
-echo "  3) Both default and batch inference"
-echo -e "Enter your choice (1/2/3) [default: 1]: \c"
+echo "  3) Long-form inference only"
+echo "  4) All tests (default + batch + long-form)"
+echo -e "Enter your choice (1/2/3/4) [default: 1]: \c"
 read -r test_mode
 test_mode=${test_mode:-1}
 
@@ -26,22 +27,32 @@ case $test_mode in
     1)
         TEST_DEFAULT=true
         TEST_BATCH=false
+        TEST_LONGFORM=false
         echo "Running default inference tests only"
         ;;
     2)
         TEST_DEFAULT=false
         TEST_BATCH=true
+        TEST_LONGFORM=false
         echo "Running batch inference tests only"
         ;;
     3)
+        TEST_DEFAULT=false
+        TEST_BATCH=false
+        TEST_LONGFORM=true
+        echo "Running long-form inference tests only"
+        ;;
+    4)
         TEST_DEFAULT=true
         TEST_BATCH=true
-        echo "Running both default and batch inference tests"
+        TEST_LONGFORM=true
+        echo "Running all tests (default + batch + long-form)"
         ;;
     *)
         echo "Invalid choice. Using default inference only."
         TEST_DEFAULT=true
         TEST_BATCH=false
+        TEST_LONGFORM=false
         ;;
 esac
 echo ""
@@ -51,6 +62,10 @@ BATCH_VOICE_STYLE_1="assets/voice_styles/M1.json"
 BATCH_VOICE_STYLE_2="assets/voice_styles/F1.json"
 BATCH_TEXT_1="The sun sets behind the mountains, painting the sky in shades of pink and orange."
 BATCH_TEXT_2="The weather is beautiful and sunny outside. A gentle breeze makes the air feel fresh and pleasant."
+
+# Long-form inference test data
+LONGFORM_VOICE_STYLE="assets/voice_styles/M1.json"
+LONGFORM_TEXT="This is a very long text that will be automatically split into multiple chunks. The system will process each chunk separately and then concatenate them together with natural pauses between segments. This ensures that even very long texts can be processed efficiently while maintaining natural speech flow and avoiding memory issues. The text chunking algorithm intelligently splits on paragraph and sentence boundaries, preserving the natural flow of the content. When a sentence is too long, it further splits on commas and spaces as needed. This multi-level approach ensures optimal chunk sizes for inference while maintaining linguistic coherence."
 
 # Ask if user wants to clean results folders
 echo -e "Do you want to clean all results folders before running tests? (y/N): \c"
@@ -123,7 +138,10 @@ if [ "$TEST_DEFAULT" = true ]; then
     run_test "Python (default)" "py" "uv run example_onnx.py"
 fi
 if [ "$TEST_BATCH" = true ]; then
-    run_test "Python (batch)" "py" "uv run example_onnx.py --voice-style $BATCH_VOICE_STYLE_1 $BATCH_VOICE_STYLE_2 --text '$BATCH_TEXT_1' '$BATCH_TEXT_2'"
+    run_test "Python (batch)" "py" "uv run example_onnx.py --batch --voice-style $BATCH_VOICE_STYLE_1 $BATCH_VOICE_STYLE_2 --text '$BATCH_TEXT_1' '$BATCH_TEXT_2'"
+fi
+if [ "$TEST_LONGFORM" = true ]; then
+    run_test "Python (long-form)" "py" "uv run example_onnx.py --voice-style $LONGFORM_VOICE_STYLE --text '$LONGFORM_TEXT'"
 fi
 
 # ====================================
@@ -136,7 +154,10 @@ if [ "$TEST_DEFAULT" = true ]; then
     run_test "JavaScript (default)" "nodejs" "node example_onnx.js"
 fi
 if [ "$TEST_BATCH" = true ]; then
-    run_test "JavaScript (batch)" "nodejs" "node example_onnx.js --voice-style $BATCH_VOICE_STYLE_1,$BATCH_VOICE_STYLE_2 --text '$BATCH_TEXT_1|$BATCH_TEXT_2'"
+    run_test "JavaScript (batch)" "nodejs" "node example_onnx.js --batch --voice-style $BATCH_VOICE_STYLE_1,$BATCH_VOICE_STYLE_2 --text '$BATCH_TEXT_1|$BATCH_TEXT_2'"
+fi
+if [ "$TEST_LONGFORM" = true ]; then
+    run_test "JavaScript (long-form)" "nodejs" "node example_onnx.js --voice-style $LONGFORM_VOICE_STYLE --text '$LONGFORM_TEXT'"
 fi
 
 # ====================================
@@ -150,7 +171,10 @@ if [ "$TEST_DEFAULT" = true ]; then
     run_test "Go (default)" "go" "go run example_onnx.go helper.go"
 fi
 if [ "$TEST_BATCH" = true ]; then
-    run_test "Go (batch)" "go" "go run example_onnx.go helper.go --voice-style $BATCH_VOICE_STYLE_1,$BATCH_VOICE_STYLE_2 --text '$BATCH_TEXT_1|$BATCH_TEXT_2'"
+    run_test "Go (batch)" "go" "go run example_onnx.go helper.go --batch -voice-style $BATCH_VOICE_STYLE_1,$BATCH_VOICE_STYLE_2 -text '$BATCH_TEXT_1|$BATCH_TEXT_2'"
+fi
+if [ "$TEST_LONGFORM" = true ]; then
+    run_test "Go (long-form)" "go" "go run example_onnx.go helper.go -voice-style $LONGFORM_VOICE_STYLE -text '$LONGFORM_TEXT'"
 fi
 
 # ====================================
@@ -163,7 +187,10 @@ if [ "$TEST_DEFAULT" = true ]; then
     run_test "Rust (default)" "rust" "cargo run --release"
 fi
 if [ "$TEST_BATCH" = true ]; then
-    run_test "Rust (batch)" "rust" "cargo run --release -- --voice-style $BATCH_VOICE_STYLE_1,$BATCH_VOICE_STYLE_2 --text '$BATCH_TEXT_1|$BATCH_TEXT_2'"
+    run_test "Rust (batch)" "rust" "cargo run --release -- --batch --voice-style $BATCH_VOICE_STYLE_1,$BATCH_VOICE_STYLE_2 --text '$BATCH_TEXT_1|$BATCH_TEXT_2'"
+fi
+if [ "$TEST_LONGFORM" = true ]; then
+    run_test "Rust (long-form)" "rust" "cargo run --release -- --voice-style $LONGFORM_VOICE_STYLE --text '$LONGFORM_TEXT'"
 fi
 
 # ====================================
@@ -176,7 +203,10 @@ if [ "$TEST_DEFAULT" = true ]; then
     run_test "C# (default)" "csharp" "dotnet run --configuration Release"
 fi
 if [ "$TEST_BATCH" = true ]; then
-    run_test "C# (batch)" "csharp" "dotnet run --configuration Release -- --voice-style ../$BATCH_VOICE_STYLE_1,../$BATCH_VOICE_STYLE_2 --text '$BATCH_TEXT_1|$BATCH_TEXT_2'"
+    run_test "C# (batch)" "csharp" "dotnet run --configuration Release -- --batch --voice-style ../$BATCH_VOICE_STYLE_1,../$BATCH_VOICE_STYLE_2 --text '$BATCH_TEXT_1|$BATCH_TEXT_2'"
+fi
+if [ "$TEST_LONGFORM" = true ]; then
+    run_test "C# (long-form)" "csharp" "dotnet run --configuration Release -- --voice-style ../$LONGFORM_VOICE_STYLE --text '$LONGFORM_TEXT'"
 fi
 
 # ====================================
@@ -189,7 +219,10 @@ if [ "$TEST_DEFAULT" = true ]; then
     run_test "Java (default)" "java" "mvn exec:java -q"
 fi
 if [ "$TEST_BATCH" = true ]; then
-    run_test "Java (batch)" "java" "mvn exec:java -q -Dexec.args='--voice-style $BATCH_VOICE_STYLE_1,$BATCH_VOICE_STYLE_2 --text \"$BATCH_TEXT_1|$BATCH_TEXT_2\"'"
+    run_test "Java (batch)" "java" "mvn exec:java -q -Dexec.args='--batch --voice-style $BATCH_VOICE_STYLE_1,$BATCH_VOICE_STYLE_2 --text \"$BATCH_TEXT_1|$BATCH_TEXT_2\"'"
+fi
+if [ "$TEST_LONGFORM" = true ]; then
+    run_test "Java (long-form)" "java" "mvn exec:java -q -Dexec.args='--voice-style $LONGFORM_VOICE_STYLE --text \"$LONGFORM_TEXT\"'"
 fi
 
 # ====================================
@@ -202,7 +235,10 @@ if [ "$TEST_DEFAULT" = true ]; then
     run_test "Swift (default)" "swift" ".build/release/example_onnx"
 fi
 if [ "$TEST_BATCH" = true ]; then
-    run_test "Swift (batch)" "swift" ".build/release/example_onnx --voice-style $BATCH_VOICE_STYLE_1,$BATCH_VOICE_STYLE_2 --text '$BATCH_TEXT_1|$BATCH_TEXT_2'"
+    run_test "Swift (batch)" "swift" ".build/release/example_onnx --batch --voice-style $BATCH_VOICE_STYLE_1,$BATCH_VOICE_STYLE_2 --text '$BATCH_TEXT_1|$BATCH_TEXT_2'"
+fi
+if [ "$TEST_LONGFORM" = true ]; then
+    run_test "Swift (long-form)" "swift" ".build/release/example_onnx --voice-style $LONGFORM_VOICE_STYLE --text '$LONGFORM_TEXT'"
 fi
 
 # ====================================
@@ -215,7 +251,10 @@ if [ "$TEST_DEFAULT" = true ]; then
     run_test "C++ (default)" "cpp/build" "./example_onnx"
 fi
 if [ "$TEST_BATCH" = true ]; then
-    run_test "C++ (batch)" "cpp/build" "./example_onnx --voice-style ../$BATCH_VOICE_STYLE_1,../$BATCH_VOICE_STYLE_2 --text '$BATCH_TEXT_1|$BATCH_TEXT_2'"
+    run_test "C++ (batch)" "cpp/build" "./example_onnx --batch --voice-style ../$BATCH_VOICE_STYLE_1,../$BATCH_VOICE_STYLE_2 --text '$BATCH_TEXT_1|$BATCH_TEXT_2'"
+fi
+if [ "$TEST_LONGFORM" = true ]; then
+    run_test "C++ (long-form)" "cpp/build" "./example_onnx --voice-style ../$LONGFORM_VOICE_STYLE --text '$LONGFORM_TEXT'"
 fi
 
 # ====================================

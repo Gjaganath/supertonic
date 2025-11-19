@@ -186,15 +186,15 @@ async function generateSpeech() {
         `;
         
         const totalStep = parseInt(totalStepInput.value);
-        const textList = [text];
         
         showStatus('ℹ️ <strong>Generating speech from text...</strong>');
         const tic = Date.now();
         
         const { wav, duration } = await textToSpeech.call(
-            textList, 
+            text, 
             currentStyle, 
-            totalStep, 
+            totalStep,
+            0.3,
             (step, total) => {
                 showStatus(`ℹ️ <strong>Denoising (${step}/${total})...</strong>`);
             }

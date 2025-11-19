@@ -16,6 +16,7 @@ struct Args {
         "This morning, I took a walk in the park, and the sound of the birds and the breeze was so pleasant that I stopped for a long time just to listen."
     };
     std::string save_dir = "results";
+    bool batch = false;
 };
 
 auto splitString = [](const std::string& str, char delim) {
@@ -39,6 +40,7 @@ Args parseArgs(int argc, char* argv[]) {
         else if (arg == "--voice-style" && i + 1 < argc) args.voice_style = splitString(argv[++i], ',');
         else if (arg == "--text" && i + 1 < argc) args.text = splitString(argv[++i], '|');
         else if (arg == "--save-dir" && i + 1 < argc) args.save_dir = argv[++i];
+        else if (arg == "--batch") args.batch = true;
     }
     return args;
 }
@@ -53,13 +55,13 @@ int main(int argc, char* argv[]) {
     std::string save_dir = args.save_dir;
     std::vector<std::string> voice_style_paths = args.voice_style;
     std::vector<std::string> text_list = args.text;
+    bool batch = args.batch;
     
     if (voice_style_paths.size() != text_list.size()) {
         std::cerr << "Error: Number of voice styles (" << voice_style_paths.size() 
                   << ") must match number of texts (" << text_list.size() << ")\n";
         return 1;
     }
-    
     int bsz = voice_style_paths.size();
     
     // --- 2. Load Text to Speech --- //
@@ -81,7 +83,11 @@ int main(int argc, char* argv[]) {
         std::cout << "\n[" << (n + 1) << "/" << n_test << "] Starting synthesis...\n";
         
         auto result = timer("Generating speech from text", [&]() {
-            return text_to_speech->call(memory_info, text_list, style, total_step);
+            if (batch) {
+                return text_to_speech->batch(memory_info, text_list, style, total_step);
+            } else {
+                return text_to_speech->call(memory_info, text_list[0], style, total_step);
+            }
         });
         
         int sample_rate = text_to_speech->getSampleRate();

@@ -2,6 +2,10 @@
 
 This example demonstrates how to use Supertonic in a web browser using ONNX Runtime Web.
 
+## 📰 Update News
+
+**2025.11.19** - Added automatic text chunking for long-form inference. Long texts are split into chunks and synthesized with natural pauses.
+
 ## Features
 
 - 🌐 Runs entirely in the browser (no server required for inference)

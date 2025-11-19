@@ -88,6 +88,14 @@ public:
     
     SynthesisResult call(
         Ort::MemoryInfo& memory_info,
+        const std::string& text,
+        const Style& style,
+        int total_step,
+        float silence_duration = 0.3f
+    );
+    
+    SynthesisResult batch(
+        Ort::MemoryInfo& memory_info,
         const std::vector<std::string>& text_list,
         const Style& style,
         int total_step
@@ -96,6 +104,12 @@ public:
     int getSampleRate() const { return sample_rate_; }
 
 private:
+    SynthesisResult _infer(
+        Ort::MemoryInfo& memory_info,
+        const std::vector<std::string>& text_list,
+        const Style& style,
+        int total_step
+    );
     Config cfgs_;
     UnicodeProcessor* text_processor_;
     Ort::Session* dp_ort_;
@@ -200,3 +214,6 @@ auto timer(const std::string& name, Func&& func) -> decltype(func()) {
 
 // Sanitize filename
 std::string sanitizeFilename(const std::string& text, int max_len);
+
+// Chunk text into manageable segments
+std::vector<std::string> chunkText(const std::string& text, int max_len = 300);

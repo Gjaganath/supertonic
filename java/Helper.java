@@ -15,6 +15,8 @@ import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.text.Normalizer;
 import java.util.*;
+import java.util.regex.Pattern;
+import java.util.regex.Matcher;
 
 /**
  * Configuration classes
@@ -152,7 +154,7 @@ class TextToSpeech {
         this.ldim = config.ttl.latentDim;
     }
     
-    public TTSResult call(List<String> textList, Style style, int totalStep, OrtEnvironment env) 
+    private TTSResult _infer(List<String> textList, Style style, int totalStep, OrtEnvironment env) 
             throws OrtException {
         int bsz = textList.size();
         
@@ -296,6 +298,57 @@ class TextToSpeech {
         return new NoisyLatentResult(noisyLatent, latentMask);
     }
     
+    /**
+     * Synthesize speech from a single text with automatic chunking
+     */
+    public TTSResult call(String text, Style style, int totalStep, float silenceDuration, OrtEnvironment env) 
+            throws OrtException {
+        List<String> chunks = Helper.chunkText(text, 0);
+        
+        List<Float> wavCat = new ArrayList<>();
+        float durCat = 0.0f;
+        
+        for (int i = 0; i < chunks.size(); i++) {
+            TTSResult result = _infer(Arrays.asList(chunks.get(i)), style, totalStep, env);
+            
+            float dur = result.duration[0];
+            int wavLen = (int) (sampleRate * dur);
+            float[] wavChunk = new float[wavLen];
+            System.arraycopy(result.wav, 0, wavChunk, 0, Math.min(wavLen, result.wav.length));
+            
+            if (i == 0) {
+                for (float val : wavChunk) {
+                    wavCat.add(val);
+                }
+                durCat = dur;
+            } else {
+                int silenceLen = (int) (silenceDuration * sampleRate);
+                for (int j = 0; j < silenceLen; j++) {
+                    wavCat.add(0.0f);
+                }
+                for (float val : wavChunk) {
+                    wavCat.add(val);
+                }
+                durCat += silenceDuration + dur;
+            }
+        }
+        
+        float[] wavArray = new float[wavCat.size()];
+        for (int i = 0; i < wavCat.size(); i++) {
+            wavArray[i] = wavCat.get(i);
+        }
+        
+        return new TTSResult(wavArray, new float[]{durCat});
+    }
+    
+    /**
+     * Batch synthesize speech from multiple texts
+     */
+    public TTSResult batch(List<String> textList, Style style, int totalStep, OrtEnvironment env) 
+            throws OrtException {
+        return _infer(textList, style, totalStep, env);
+    }
+    
     public void close() throws OrtException {
         if (dpSession != null) dpSession.close();
         if (textEncSession != null) textEncSession.close();
@@ -352,6 +405,156 @@ class NoisyLatentResult {
  * Helper utility class
  */
 public class Helper {
+    
+    private static final int MAX_CHUNK_LENGTH = 300;
+    private static final String[] ABBREVIATIONS = {
+        "Dr.", "Mr.", "Mrs.", "Ms.", "Prof.", "Sr.", "Jr.",
+        "St.", "Ave.", "Rd.", "Blvd.", "Dept.", "Inc.", "Ltd.",
+        "Co.", "Corp.", "etc.", "vs.", "i.e.", "e.g.", "Ph.D."
+    };
+    
+    /**
+     * Chunk text into smaller segments based on paragraphs and sentences
+     */
+    public static List<String> chunkText(String text, int maxLen) {
+        if (maxLen == 0) {
+            maxLen = MAX_CHUNK_LENGTH;
+        }
+        
+        text = text.trim();
+        if (text.isEmpty()) {
+            return Arrays.asList("");
+        }
+        
+        // Split by paragraphs
+        String[] paragraphs = text.split("\\n\\s*\\n");
+        List<String> chunks = new ArrayList<>();
+        
+        for (String para : paragraphs) {
+            para = para.trim();
+            if (para.isEmpty()) {
+                continue;
+            }
+            
+            if (para.length() <= maxLen) {
+                chunks.add(para);
+                continue;
+            }
+            
+            // Split by sentences
+            List<String> sentences = splitSentences(para);
+            StringBuilder current = new StringBuilder();
+            int currentLen = 0;
+            
+            for (String sentence : sentences) {
+                sentence = sentence.trim();
+                if (sentence.isEmpty()) {
+                    continue;
+                }
+                
+                int sentenceLen = sentence.length();
+                if (sentenceLen > maxLen) {
+                    // If sentence is longer than maxLen, split by comma or space
+                    if (current.length() > 0) {
+                        chunks.add(current.toString().trim());
+                        current.setLength(0);
+                        currentLen = 0;
+                    }
+                    
+                    // Try splitting by comma
+                    String[] parts = sentence.split(",");
+                    for (String part : parts) {
+                        part = part.trim();
+                        if (part.isEmpty()) {
+                            continue;
+                        }
+                        
+                        int partLen = part.length();
+                        if (partLen > maxLen) {
+                            // Split by space as last resort
+                            String[] words = part.split("\\s+");
+                            StringBuilder wordChunk = new StringBuilder();
+                            int wordChunkLen = 0;
+                            
+                            for (String word : words) {
+                                int wordLen = word.length();
+                                if (wordChunkLen + wordLen + 1 > maxLen && wordChunk.length() > 0) {
+                                    chunks.add(wordChunk.toString().trim());
+                                    wordChunk.setLength(0);
+                                    wordChunkLen = 0;
+                                }
+                                
+                                if (wordChunk.length() > 0) {
+                                    wordChunk.append(" ");
+                                    wordChunkLen++;
+                                }
+                                wordChunk.append(word);
+                                wordChunkLen += wordLen;
+                            }
+                            
+                            if (wordChunk.length() > 0) {
+                                chunks.add(wordChunk.toString().trim());
+                            }
+                        } else {
+                            if (currentLen + partLen + 1 > maxLen && current.length() > 0) {
+                                chunks.add(current.toString().trim());
+                                current.setLength(0);
+                                currentLen = 0;
+                            }
+                            
+                            if (current.length() > 0) {
+                                current.append(", ");
+                                currentLen += 2;
+                            }
+                            current.append(part);
+                            currentLen += partLen;
+                        }
+                    }
+                    continue;
+                }
+                
+                if (currentLen + sentenceLen + 1 > maxLen && current.length() > 0) {
+                    chunks.add(current.toString().trim());
+                    current.setLength(0);
+                    currentLen = 0;
+                }
+                
+                if (current.length() > 0) {
+                    current.append(" ");
+                    currentLen++;
+                }
+                current.append(sentence);
+                currentLen += sentenceLen;
+            }
+            
+            if (current.length() > 0) {
+                chunks.add(current.toString().trim());
+            }
+        }
+        
+        if (chunks.isEmpty()) {
+            return Arrays.asList("");
+        }
+        
+        return chunks;
+    }
+    
+    /**
+     * Split text into sentences, avoiding common abbreviations
+     */
+    private static List<String> splitSentences(String text) {
+        // Build pattern that avoids abbreviations
+        StringBuilder abbrevPattern = new StringBuilder();
+        for (int i = 0; i < ABBREVIATIONS.length; i++) {
+            if (i > 0) abbrevPattern.append("|");
+            abbrevPattern.append(Pattern.quote(ABBREVIATIONS[i]));
+        }
+        
+        // Match sentence endings, but not abbreviations
+        String patternStr = "(?<!(?:" + abbrevPattern.toString() + "))(?<=[.!?])\\s+";
+        Pattern pattern = Pattern.compile(patternStr);
+        return Arrays.asList(pattern.split(text));
+    }
     
     /**
      * Load voice style from JSON files

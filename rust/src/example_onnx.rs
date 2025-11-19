@@ -41,6 +41,10 @@ struct Args {
     /// Output directory
     #[arg(long, default_value = "results")]
     save_dir: String,
+
+    /// Enable batch mode (multiple text-style pairs)
+    #[arg(long, default_value = "false")]
+    batch: bool,
 }
 
 fn main() -> Result<()> {
@@ -53,13 +57,16 @@ fn main() -> Result<()> {
     let voice_style_paths = &args.voice_style;
     let text_list = &args.text;
     let save_dir = &args.save_dir;
+    let batch = args.batch;
 
-    if voice_style_paths.len() != text_list.len() {
-        anyhow::bail!(
-            "Number of voice styles ({}) must match number of texts ({})",
-            voice_style_paths.len(),
-            text_list.len()
-        );
+    if batch {
+        if voice_style_paths.len() != text_list.len() {
+            anyhow::bail!(
+                "Number of voice styles ({}) must match number of texts ({})",
+                voice_style_paths.len(),
+                text_list.len()
+            );
+        }
     }
 
     let bsz = voice_style_paths.len();
@@ -76,19 +83,31 @@ fn main() -> Result<()> {
     for n in 0..n_test {
         println!("\n[{}/{}] Starting synthesis...", n + 1, n_test);
 
-        let (wav, duration) = timer("Generating speech from text", || {
-            text_to_speech.call(text_list, &style, total_step)
-        })?;
+        let (wav, duration) = if batch {
+            timer("Generating speech from text", || {
+                text_to_speech.batch(text_list, &style, total_step)
+            })?
+        } else {
+            let (w, d) = timer("Generating speech from text", || {
+                text_to_speech.call(&text_list[0], &style, total_step, 0.3)
+            })?;
+            (w, vec![d])
+        };
 
         // Save outputs
-        let wav_len = wav.len() / bsz;
         for i in 0..bsz {
             let fname = format!("{}_{}.wav", sanitize_filename(&text_list[i], 20), n + 1);
-            let actual_len = (text_to_speech.sample_rate as f32 * duration[i]) as usize;
-
-            let wav_start = i * wav_len;
-            let wav_end = wav_start + actual_len.min(wav_len);
-            let wav_slice = &wav[wav_start..wav_end];
+            let wav_slice = if batch {
+                let wav_len = wav.len() / bsz;
+                let actual_len = (text_to_speech.sample_rate as f32 * duration[i]) as usize;
+                let wav_start = i * wav_len;
+                let wav_end = wav_start + actual_len.min(wav_len);
+                &wav[wav_start..wav_end]
+            } else {
+                // For non-batch mode, wav is a single concatenated audio
+                let actual_len = (text_to_speech.sample_rate as f32 * duration[0]) as usize;
+                &wav[..actual_len.min(wav.len())]
+            };
 
             let output_path = PathBuf::from(save_dir).join(&fname);
             write_wav_file(&output_path, wav_slice, text_to_speech.sample_rate)?;

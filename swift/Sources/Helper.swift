@@ -203,6 +203,199 @@ func writeWavFile(_ filename: String, _ audioData: [Float], _ sampleRate: Int) t
     try data.write(to: url)
 }
 
+// MARK: - Text Chunking
+
+let MAX_CHUNK_LENGTH = 300
+let ABBREVIATIONS = [
+    "Dr.", "Mr.", "Mrs.", "Ms.", "Prof.", "Sr.", "Jr.",
+    "St.", "Ave.", "Rd.", "Blvd.", "Dept.", "Inc.", "Ltd.",
+    "Co.", "Corp.", "etc.", "vs.", "i.e.", "e.g.", "Ph.D."
+]
+
+func chunkText(_ text: String, maxLen: Int = 0) -> [String] {
+    let actualMaxLen = maxLen > 0 ? maxLen : MAX_CHUNK_LENGTH
+    let trimmedText = text.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+    
+    if trimmedText.isEmpty {
+        return [""]
+    }
+    
+    // Split by paragraphs using regex
+    let paraPattern = try! NSRegularExpression(pattern: "\\n\\s*\\n")
+    let paraRange = NSRange(trimmedText.startIndex..., in: trimmedText)
+    var paragraphs = [String]()
+    var lastEnd = trimmedText.startIndex
+    
+    paraPattern.enumerateMatches(in: trimmedText, range: paraRange) { match, _, _ in
+        if let match = match, let range = Range(match.range, in: trimmedText) {
+            paragraphs.append(String(trimmedText[lastEnd..<range.lowerBound]))
+            lastEnd = range.upperBound
+        }
+    }
+    if lastEnd < trimmedText.endIndex {
+        paragraphs.append(String(trimmedText[lastEnd...]))
+    }
+    if paragraphs.isEmpty {
+        paragraphs = [trimmedText]
+    }
+    
+    var chunks = [String]()
+    
+    for para in paragraphs {
+        let trimmedPara = para.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+        if trimmedPara.isEmpty {
+            continue
+        }
+        
+        if trimmedPara.count <= actualMaxLen {
+            chunks.append(trimmedPara)
+            continue
+        }
+        
+        // Split by sentences
+        let sentences = splitSentences(trimmedPara)
+        var current = ""
+        var currentLen = 0
+        
+        for sentence in sentences {
+            let trimmedSentence = sentence.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+            if trimmedSentence.isEmpty {
+                continue
+            }
+            
+            let sentenceLen = trimmedSentence.count
+            if sentenceLen > actualMaxLen {
+                // If sentence is longer than maxLen, split by comma or space
+                if !current.isEmpty {
+                    chunks.append(current.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines))
+                    current = ""
+                    currentLen = 0
+                }
+                
+                // Try splitting by comma
+                let parts = trimmedSentence.components(separatedBy: ",")
+                for part in parts {
+                    let trimmedPart = part.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+                    if trimmedPart.isEmpty {
+                        continue
+                    }
+                    
+                    let partLen = trimmedPart.count
+                    if partLen > actualMaxLen {
+                        // Split by space as last resort
+                        let words = trimmedPart.components(separatedBy: CharacterSet.whitespaces).filter { !$0.isEmpty }
+                        var wordChunk = ""
+                        var wordChunkLen = 0
+                        
+                        for word in words {
+                            let wordLen = word.count
+                            if wordChunkLen + wordLen + 1 > actualMaxLen && !wordChunk.isEmpty {
+                                chunks.append(wordChunk.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines))
+                                wordChunk = ""
+                                wordChunkLen = 0
+                            }
+                            
+                            if !wordChunk.isEmpty {
+                                wordChunk += " "
+                                wordChunkLen += 1
+                            }
+                            wordChunk += word
+                            wordChunkLen += wordLen
+                        }
+                        
+                        if !wordChunk.isEmpty {
+                            chunks.append(wordChunk.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines))
+                        }
+                    } else {
+                        if currentLen + partLen + 1 > actualMaxLen && !current.isEmpty {
+                            chunks.append(current.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines))
+                            current = ""
+                            currentLen = 0
+                        }
+                        
+                        if !current.isEmpty {
+                            current += ", "
+                            currentLen += 2
+                        }
+                        current += trimmedPart
+                        currentLen += partLen
+                    }
+                }
+                continue
+            }
+            
+            if currentLen + sentenceLen + 1 > actualMaxLen && !current.isEmpty {
+                chunks.append(current.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines))
+                current = ""
+                currentLen = 0
+            }
+            
+            if !current.isEmpty {
+                current += " "
+                currentLen += 1
+            }
+            current += trimmedSentence
+            currentLen += sentenceLen
+        }
+        
+        if !current.isEmpty {
+            chunks.append(current.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines))
+        }
+    }
+    
+    return chunks.isEmpty ? [""] : chunks
+}
+
+func splitSentences(_ text: String) -> [String] {
+    // Swift's regex doesn't support lookbehind reliably, so we use a simpler approach
+    // Split on sentence boundaries and then check if they're abbreviations
+    let regex = try! NSRegularExpression(pattern: "([.!?])\\s+")
+    let range = NSRange(text.startIndex..., in: text)
+    
+    // Find all matches
+    let matches = regex.matches(in: text, range: range)
+    if matches.isEmpty {
+        return [text]
+    }
+    
+    var sentences = [String]()
+    var lastEnd = text.startIndex
+    
+    for match in matches {
+        guard let matchRange = Range(match.range, in: text) else { continue }
+        
+        // Get the text before the punctuation
+        let beforePunc = String(text[lastEnd..<matchRange.lowerBound])
+        
+        // Get the punctuation character
+        let puncRange = Range(NSRange(location: match.range.location, length: 1), in: text)!
+        let punc = String(text[puncRange])
+        
+        // Check if this ends with an abbreviation
+        var isAbbrev = false
+        let combined = beforePunc.trimmingCharacters(in: CharacterSet.whitespaces) + punc
+        for abbrev in ABBREVIATIONS {
+            if combined.hasSuffix(abbrev) {
+                isAbbrev = true
+                break
+            }
+        }
+        
+        if !isAbbrev {
+            // This is a real sentence boundary
+            sentences.append(String(text[lastEnd..<matchRange.upperBound]))
+            lastEnd = matchRange.upperBound
+        }
+    }
+    
+    // Add the remaining text
+    if lastEnd < text.endIndex {
+        sentences.append(String(text[lastEnd...]))
+    }
+    
+    return sentences.isEmpty ? [text] : sentences
+}
+
 // MARK: - Utility Functions
 
 func timer<T>(_ name: String, _ f: () throws -> T) rethrows -> T {
@@ -260,7 +453,7 @@ class TextToSpeech {
         self.sampleRate = cfgs.ae.sample_rate
     }
     
-    func call(_ textList: [String], _ style: Style, _ totalStep: Int) throws -> (wav: [Float], duration: [Float]) {
+    private func _infer(_ textList: [String], _ style: Style, _ totalStep: Int) throws -> (wav: [Float], duration: [Float]) {
         let bsz = textList.count
         
         // Process text
@@ -381,6 +574,39 @@ class TextToSpeech {
         }
         
         return (wav, duration)
+    }
+    
+    func call(_ text: String, _ style: Style, _ totalStep: Int, silenceDuration: Float) throws -> (wav: [Float], duration: Float) {
+        let chunks = chunkText(text)
+        
+        var wavCat = [Float]()
+        var durCat: Float = 0.0
+        
+        for (i, chunk) in chunks.enumerated() {
+            let result = try _infer([chunk], style, totalStep)
+            
+            let dur = result.duration[0]
+            let wavLen = Int(Float(sampleRate) * dur)
+            let wavChunk = Array(result.wav.prefix(wavLen))
+            
+            if i == 0 {
+                wavCat = wavChunk
+                durCat = dur
+            } else {
+                let silenceLen = Int(silenceDuration * Float(sampleRate))
+                let silence = [Float](repeating: 0.0, count: silenceLen)
+                
+                wavCat.append(contentsOf: silence)
+                wavCat.append(contentsOf: wavChunk)
+                durCat += silenceDuration + dur
+            }
+        }
+        
+        return (wavCat, durCat)
+    }
+    
+    func batch(_ textList: [String], _ style: Style, _ totalStep: Int) throws -> (wav: [Float], duration: [Float]) {
+        return try _infer(textList, style, totalStep)
     }
 }
 

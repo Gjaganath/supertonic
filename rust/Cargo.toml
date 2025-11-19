@@ -32,6 +32,9 @@ anyhow = "1.0"
 # Unicode normalization
 unicode-normalization = "0.1"
 
+# Regular expressions
+regex = "1.10"
+
 # System calls
 libc = "0.2"
 

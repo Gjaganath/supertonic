@@ -30,6 +30,9 @@ def parse_args():
         "--n-test", type=int, default=4, help="Number of times to generate"
     )
 
+    # Batch processing
+    parser.add_argument("--batch", action="store_true", help="Batch processing")
+
     # Input/Output
     parser.add_argument(
         "--voice-style",
@@ -63,11 +66,11 @@ n_test = args.n_test
 save_dir = args.save_dir
 voice_style_paths = args.voice_style
 text_list = args.text
+batch = args.batch
 
 assert len(voice_style_paths) == len(
     text_list
 ), f"Number of voice styles ({len(voice_style_paths)}) must match number of texts ({len(text_list)})"
-
 bsz = len(voice_style_paths)
 
 # --- 2. Load Text to Speech --- #
@@ -80,7 +83,10 @@ style = load_voice_style(voice_style_paths, verbose=True)
 for n in range(n_test):
     print(f"\n[{n+1}/{n_test}] Starting synthesis...")
     with timer("Generating speech from text"):
-        wav, duration = text_to_speech(text_list, style, total_step)
+        if batch:
+            wav, duration = text_to_speech.batch(text_list, style, total_step)
+        else:
+            wav, duration = text_to_speech(text_list[0], style, total_step)
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
     for b in range(bsz):

@@ -19,6 +19,7 @@ type Args struct {
 	voiceStyle  []string
 	text        []string
 	saveDir     string
+	batch       bool
 }
 
 func parseArgs() *Args {
@@ -29,6 +30,7 @@ func parseArgs() *Args {
 	flag.IntVar(&args.totalStep, "total-step", 5, "Number of denoising steps")
 	flag.IntVar(&args.nTest, "n-test", 4, "Number of times to generate")
 	flag.StringVar(&args.saveDir, "save-dir", "results", "Output directory")
+	flag.BoolVar(&args.batch, "batch", false, "Enable batch mode (multiple text-style pairs)")
 
 	var voiceStyleStr, textStr string
 	flag.StringVar(&voiceStyleStr, "voice-style", "assets/voice_styles/M1.json", "Voice style file path(s), comma-separated")
@@ -65,11 +67,14 @@ func main() {
 	saveDir := args.saveDir
 	voiceStylePaths := args.voiceStyle
 	textList := args.text
+	batch := args.batch
 
-	if len(voiceStylePaths) != len(textList) {
-		fmt.Printf("Error: Number of voice styles (%d) must match number of texts (%d)\n",
-			len(voiceStylePaths), len(textList))
-		os.Exit(1)
+	if batch {
+		if len(voiceStylePaths) != len(textList) {
+			fmt.Printf("Error: Number of voice styles (%d) must match number of texts (%d)\n",
+				len(voiceStylePaths), len(textList))
+			os.Exit(1)
+		}
 	}
 
 	bsz := len(voiceStylePaths)
@@ -115,21 +120,46 @@ func main() {
 
 		var wav []float32
 		var duration []float32
-		Timer("Generating speech from text", func() interface{} {
-			w, d, err := textToSpeech.Call(textList, style, totalStep)
-			if err != nil {
-				fmt.Printf("Error generating speech: %v\n", err)
-				os.Exit(1)
-			}
-			wav = w
-			duration = d
-			return nil
-		})
+
+		if batch {
+			Timer("Generating speech from text", func() interface{} {
+				w, d, err := textToSpeech.Batch(textList, style, totalStep)
+				if err != nil {
+					fmt.Printf("Error generating speech: %v\n", err)
+					os.Exit(1)
+				}
+				wav = w
+				duration = d
+				return nil
+			})
+		} else {
+			Timer("Generating speech from text", func() interface{} {
+				w, d, err := textToSpeech.Call(textList[0], style, totalStep, 0.3)
+				if err != nil {
+					fmt.Printf("Error generating speech: %v\n", err)
+					os.Exit(1)
+				}
+				wav = w
+				duration = []float32{d}
+				return nil
+			})
+		}
 
 		// Save outputs
 		for i := 0; i < bsz; i++ {
 			fname := fmt.Sprintf("%s_%d.wav", sanitizeFilename(textList[i], 20), n+1)
-			wavOut := extractWavSegment(wav, duration[i], textToSpeech.SampleRate, i, bsz)
+			var wavOut []float64
+			
+			if batch {
+				wavOut = extractWavSegment(wav, duration[i], textToSpeech.SampleRate, i, bsz)
+			} else {
+				// For non-batch mode, wav is a single concatenated audio
+				wavLen := int(float32(textToSpeech.SampleRate) * duration[0])
+				wavOut = make([]float64, wavLen)
+				for j := 0; j < wavLen && j < len(wav); j++ {
+					wavOut[j] = float64(wav[j])
+				}
+			}
 			
 			outputPath := filepath.Join(saveDir, fname)
 			if err := writeWavFile(outputPath, wavOut, textToSpeech.SampleRate); err != nil {
